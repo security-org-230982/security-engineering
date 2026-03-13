@@ -1,0 +1,41 @@
+name: platform-deploy-gates
+
+on:
+  workflow_call:
+    inputs:
+      image-ref:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+  security-events: write
+  id-token: write
+
+jobs:
+  validate-image-signature:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: sigstore/cosign-installer@v3
+      - run: cosign verify ${{ inputs.image-ref }} --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+  trivy-image-rescan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ inputs.image-ref }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+
+  kyverno-policy-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: your-org/security-engineering
+          path: security
+      - uses: kyverno/action-install-cli@v0.2.0
+      - run: kyverno apply security/security/kyverno/policies -r security/security/kyverno/tests/resources.yaml

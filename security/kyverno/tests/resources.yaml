@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sample
+spec:
+  containers:
+    - name: app
+      image: ghcr.io/your-org/simple-game:sha-1234

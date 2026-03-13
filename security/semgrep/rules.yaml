@@ -1,0 +1,7 @@
+rules:
+  - id: nodejs-eval
+    patterns:
+      - pattern: eval(...)
+    message: Avoid eval in Node.js
+    severity: ERROR
+    languages: [javascript, typescript]

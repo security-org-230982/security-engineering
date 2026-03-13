@@ -1,0 +1,29 @@
+name: product-static-scans
+
+on:
+  workflow_call:
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/owasp-top-ten
+            p/nodejs
+
+  dependency-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: simple-game
+          path: .
+          format: HTML
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: reports
