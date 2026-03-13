@@ -12,7 +12,6 @@ permissions:
   packages: write
   security-events: write
   id-token: write
-  actions: read
 
 jobs:
   trivy-image-and-sbom:
