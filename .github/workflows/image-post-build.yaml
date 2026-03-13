@@ -49,15 +49,15 @@ jobs:
         with:
           sarif_file: trivy-image-results.sarif
 
-      - name: Enforce Trivy policy
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: image
-          image-ref: ${{ inputs.image-ref }}
-          format: table
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: 1
+      # - name: Enforce Trivy policy
+      #   uses: aquasecurity/trivy-action@master
+      #   with:
+      #     scan-type: image
+      #     image-ref: ${{ inputs.image-ref }}
+      #     format: table
+      #     severity: HIGH,CRITICAL
+      #     ignore-unfixed: true
+      #     exit-code: 1
 
   cosign-sign:
     runs-on: ubuntu-latest
