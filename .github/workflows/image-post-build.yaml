@@ -15,44 +15,49 @@ permissions:
 
 jobs:
   trivy-image:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Show image reference
-        run: |
-          echo "IMAGE_REF=${{ inputs.image-ref }}"
-          test -n "${{ inputs.image-ref }}"
+  runs-on: ubuntu-latest
+  steps:
+    - name: Log in to GHCR
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Show image reference
+      run: echo "${{ inputs.image-ref }}"
 
-      - name: Verify image manifest is accessible
-        run: |
-          docker buildx imagetools inspect "${{ inputs.image-ref }}"
+    - name: Verify image is reachable
+      run: docker buildx imagetools inspect "${{ inputs.image-ref }}"
 
-      - name: Run Trivy image scan
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          scan-type: image
-          image-ref: ${{ inputs.image-ref }}
-          format: sarif
-          output: trivy-image-results.sarif
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: 0
+    - name: Run Trivy image scan for SARIF
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: image
+        image-ref: ${{ inputs.image-ref }}
+        format: sarif
+        output: trivy-image-results.sarif
+        severity: HIGH,CRITICAL
+        ignore-unfixed: true
+        exit-code: 0
 
-      - name: Verify SARIF exists
-        run: |
-          ls -l
-          test -f trivy-image-results.sarif
+    - name: Check SARIF file
+      run: test -f trivy-image-results.sarif
 
-      - name: Upload Trivy SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-image-results.sarif
+    - name: Upload Trivy SARIF
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: trivy-image-results.sarif
+
+    - name: Enforce Trivy policy
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: image
+        image-ref: ${{ inputs.image-ref }}
+        format: table
+        severity: HIGH,CRITICAL
+        ignore-unfixed: true
+        exit-code: 1
 
   cosign-sign:
     runs-on: ubuntu-latest
