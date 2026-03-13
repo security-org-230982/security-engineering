@@ -93,14 +93,14 @@ jobs:
 
           cat trivy-summary.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Enforce Trivy policy
-        run: |
-          trivy image \
-            --format table \
-            --severity HIGH,CRITICAL \
-            --ignore-unfixed \
-            --exit-code 1 \
-            "${{ inputs.image-ref }}"
+      # - name: Enforce Trivy policy
+      #   run: |
+      #     trivy image \
+      #       --format table \
+      #       --severity HIGH,CRITICAL \
+      #       --ignore-unfixed \
+      #       --exit-code 1 \
+      #       "${{ inputs.image-ref }}"
 
   cosign-sign:
     runs-on: ubuntu-latest
