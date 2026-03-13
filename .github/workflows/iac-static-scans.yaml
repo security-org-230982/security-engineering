@@ -3,29 +3,136 @@ name: iac-static-scans
 on:
   workflow_call:
 
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
   trivy-config-scan:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: aquasecurity/trivy-action@0.28.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          format: sarif
-          output: trivy-iac.sarif
-          scanners: misconfig,secret
-      - uses: github/codeql-action/upload-sarif@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@v0.2.2
+
+      - name: Run Trivy IaC scan for SARIF
+        run: |
+          trivy config . \
+            --format sarif \
+            --output trivy-iac.sarif \
+            --scanners misconfig,secret
+
+      - name: Upload Trivy IaC SARIF
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-iac.sarif
 
-  cis-benchmark:
-    runs-on: ubuntu-latest
-    container:
-      image: docker.io/aquasec/kube-bench:latest
-    steps:
-      - run: kube-bench --targets node,policies --json > kube-bench.json || true
-      - uses: actions/upload-artifact@v4
-        with:
-          name: kube-bench
-          path: kube-bench.json
+      - name: Run Trivy IaC scan for JSON
+        run: |
+          trivy config . \
+            --format json \
+            --output trivy-iac.json \
+            --scanners misconfig,secret
+
+      - name: Add IaC summary with Dockerfile findings
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import json
+          from collections import Counter
+
+          with open("trivy-iac.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          findings = []
+          dockerfile_findings = []
+
+          for result in data.get("Results", []):
+              target = result.get("Target", "N/A")
+              for misconf in result.get("Misconfigurations", []) or []:
+                  item = {
+                      "target": target,
+                      "id": misconf.get("ID", "N/A"),
+                      "severity": misconf.get("Severity", "UNKNOWN"),
+                      "title": (misconf.get("Title") or "").replace("\n", " ").strip(),
+                      "message": (misconf.get("Message") or "").replace("\n", " ").strip(),
+                      "resolution": (misconf.get("Resolution") or "").replace("\n", " ").strip(),
+                      "type": "misconfig"
+                  }
+                  findings.append(item)
+                  if "dockerfile" in target.lower():
+                      dockerfile_findings.append(item)
+
+              for secret in result.get("Secrets", []) or []:
+                  item = {
+                      "target": target,
+                      "id": secret.get("RuleID", "SECRET"),
+                      "severity": secret.get("Severity", "UNKNOWN"),
+                      "title": (secret.get("Title") or "Secret detected").replace("\n", " ").strip(),
+                      "message": (secret.get("Match") or "Potential secret detected").replace("\n", " ").strip(),
+                      "resolution": "",
+                      "type": "secret"
+                  }
+                  findings.append(item)
+                  if "dockerfile" in target.lower():
+                      dockerfile_findings.append(item)
+
+          counts = Counter(f["severity"] for f in findings)
+          docker_counts = Counter(f["severity"] for f in dockerfile_findings)
+
+          with open("iac-summary.md", "w", encoding="utf-8") as out:
+              out.write("## Trivy IaC Scan Summary\n\n")
+              out.write(f"- **Total findings:** **{len(findings)}**\n")
+              out.write(f"- **Critical:** {counts.get('CRITICAL', 0)}\n")
+              out.write(f"- **High:** {counts.get('HIGH', 0)}\n")
+              out.write(f"- **Medium:** {counts.get('MEDIUM', 0)}\n")
+              out.write(f"- **Low:** {counts.get('LOW', 0)}\n\n")
+
+              out.write("## Dockerfile Security Findings\n\n")
+              out.write(f"- **Total Dockerfile findings:** **{len(dockerfile_findings)}**\n")
+              out.write(f"- **Critical:** {docker_counts.get('CRITICAL', 0)}\n")
+              out.write(f"- **High:** {docker_counts.get('HIGH', 0)}\n")
+              out.write(f"- **Medium:** {docker_counts.get('MEDIUM', 0)}\n")
+              out.write(f"- **Low:** {docker_counts.get('LOW', 0)}\n\n")
+
+              if dockerfile_findings:
+                  out.write("| Rule ID | Severity | File | Title |\n")
+                  out.write("|---|---|---|---|\n")
+                  for f in dockerfile_findings[:50]:
+                      out.write(f"| `{f['id']}` | {f['severity']} | `{f['target']}` | {f['title'][:120]} |\n")
+
+                  if len(dockerfile_findings) > 50:
+                      out.write(f"\n_Only first 50 Dockerfile findings shown. Total findings: {len(dockerfile_findings)}._\n")
+
+                  out.write("\n<details><summary>Detailed Dockerfile findings</summary>\n\n")
+                  for i, f in enumerate(dockerfile_findings[:100], start=1):
+                      out.write(f"### {i}. `{f['id']}` ({f['severity']})\n")
+                      out.write(f"- File: `{f['target']}`\n")
+                      out.write(f"- Type: {f['type']}\n")
+                      if f["title"]:
+                          out.write(f"- Title: {f['title']}\n")
+                      if f["message"]:
+                          out.write(f"- Message: {f['message']}\n")
+                      if f["resolution"]:
+                          out.write(f"- Resolution: {f['resolution']}\n")
+                      out.write("\n")
+                  out.write("</details>\n\n")
+              else:
+                  out.write("No Dockerfile-specific misconfigurations or secrets were detected.\n\n")
+
+              if findings:
+                  out.write("<details><summary>All IaC findings</summary>\n\n")
+                  out.write("| Rule ID | Severity | File | Type | Title |\n")
+                  out.write("|---|---|---|---|---|\n")
+                  for f in findings[:100]:
+                      out.write(f"| `{f['id']}` | {f['severity']} | `{f['target']}` | {f['type']} | {f['title'][:100]} |\n")
+                  out.write("\n</details>\n")
+              else:
+                  out.write("No IaC misconfigurations or secrets were detected.\n")
+
+          PY
+
+          cat iac-summary.md >> "$GITHUB_STEP_SUMMARY"

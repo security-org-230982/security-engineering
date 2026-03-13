@@ -1,0 +1,31 @@
+name: cis-benchmark
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  cis-benchmark:
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/aquasec/kube-bench:latest
+
+    steps:
+      - name: Run kube-bench
+        run: kube-bench --targets node,policies --json > kube-bench.json || true
+
+      - name: Add CIS benchmark summary
+        shell: sh
+        run: |
+          echo "## CIS Benchmark Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- kube-bench scan completed." >> "$GITHUB_STEP_SUMMARY"
+          echo "- Artifact: \`kube-bench.json\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload kube-bench artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kube-bench
+          path: kube-bench.json
