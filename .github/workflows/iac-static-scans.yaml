@@ -20,7 +20,7 @@ jobs:
 
       - name: Run Trivy IaC scan for SARIF
         run: |
-          trivy config . \
+          trivy fs . \
             --format sarif \
             --output trivy-iac.sarif \
             --scanners misconfig,secret
@@ -32,7 +32,7 @@ jobs:
 
       - name: Run Trivy IaC scan for JSON
         run: |
-          trivy config . \
+          trivy fs . \
             --format json \
             --output trivy-iac.json \
             --scanners misconfig,secret
