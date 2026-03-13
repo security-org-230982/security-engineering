@@ -3,27 +3,87 @@ name: product-static-scans
 on:
   workflow_call:
 
-jobs:
-  semgrep:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: returntocorp/semgrep-action@v1
-        with:
-          config: >-
-            p/owasp-top-ten
-            p/nodejs
+permissions:
+  contents: read
+  security-events: write
 
-  dependency-check:
+jobs:
+  semgrep-sast:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dependency-check/Dependency-Check_Action@main
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Semgrep
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install semgrep
+
+      - name: Run Semgrep SARIF scan
+        run: |
+          semgrep scan --config auto --sarif --output semgrep.sarif || true
+
+      - name: Upload Semgrep SARIF
+        uses: github/codeql-action/upload-sarif@v3
         with:
-          project: simple-game
-          path: .
-          format: HTML
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dependency-check-report
-          path: reports
+          sarif_file: semgrep.sarif
+
+      - name: Run Semgrep JSON scan
+        run: |
+          semgrep scan --config auto --json --output semgrep.json || true
+
+      - name: Add Semgrep summary
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import json
+          from collections import Counter
+
+          with open("semgrep.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          results = data.get("results", [])
+          counts = Counter((r.get("extra", {}) or {}).get("severity", "UNKNOWN") for r in results)
+
+          with open("semgrep-summary.md", "w", encoding="utf-8") as out:
+              out.write("## Semgrep SAST Summary\n\n")
+              out.write(f"- **Total findings:** **{len(results)}**\n")
+              out.write(f"- **Error:** {counts.get('ERROR', 0)}\n")
+              out.write(f"- **Warning:** {counts.get('WARNING', 0)}\n")
+              out.write(f"- **Info:** {counts.get('INFO', 0)}\n\n")
+
+              if results:
+                  out.write("| Rule ID | Severity | File | Line | Message |\n")
+                  out.write("|---|---|---|---:|---|\n")
+                  for r in results[:50]:
+                      extra = r.get("extra", {}) or {}
+                      path = r.get("path", "N/A")
+                      line = (r.get("start") or {}).get("line", "N/A")
+                      sev = extra.get("severity", "UNKNOWN")
+                      rule = r.get("check_id", "N/A")
+                      msg = (extra.get("message", "") or "").replace("\n", " ").strip()
+                      msg = msg[:120]
+                      out.write(f"| `{rule}` | {sev} | `{path}` | {line} | {msg} |\n")
+
+                  if len(results) > 50:
+                      out.write(f"\n_Only first 50 findings shown in table. Total findings: {len(results)}_\n")
+
+                  out.write("\n<details><summary>Detailed Semgrep findings</summary>\n\n")
+                  for i, r in enumerate(results[:100], start=1):
+                      extra = r.get("extra", {}) or {}
+                      path = r.get("path", "N/A")
+                      line = (r.get("start") or {}).get("line", "N/A")
+                      sev = extra.get("severity", "UNKNOWN")
+                      rule = r.get("check_id", "N/A")
+                      msg = extra.get("message", "") or ""
+                      out.write(f"### {i}. `{rule}` ({sev})\n")
+                      out.write(f"- File: `{path}`\n")
+                      out.write(f"- Line: {line}\n")
+                      out.write(f"- Message: {msg}\n\n")
+                  out.write("</details>\n")
+              else:
+                  out.write("No Semgrep findings detected.\n")
+
+          PY
+
+          cat semgrep-summary.md >> "$GITHUB_STEP_SUMMARY"

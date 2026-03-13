@@ -24,14 +24,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Show image reference
-        run: echo "${{ inputs.image-ref }}"
-
-      - name: Verify image is reachable
-        run: docker buildx imagetools inspect "${{ inputs.image-ref }}"
-
       - name: Run Trivy image scan for SARIF
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           scan-type: image
           image-ref: ${{ inputs.image-ref }}
@@ -41,23 +35,83 @@ jobs:
           ignore-unfixed: true
           exit-code: 0
 
-      - name: Check SARIF file
-        run: test -f trivy-image-results.sarif
-
       - name: Upload Trivy SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-image-results.sarif
 
-      # - name: Enforce Trivy policy
-      #   uses: aquasecurity/trivy-action@master
-      #   with:
-      #     scan-type: image
-      #     image-ref: ${{ inputs.image-ref }}
-      #     format: table
-      #     severity: HIGH,CRITICAL
-      #     ignore-unfixed: true
-      #     exit-code: 1
+      - name: Run Trivy image scan for JSON summary
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: image
+          image-ref: ${{ inputs.image-ref }}
+          format: json
+          output: trivy-image-results.json
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 0
+
+      - name: Add Trivy summary
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import json
+          from collections import Counter
+
+          path = "trivy-image-results.json"
+          with open(path, "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          vulns = []
+          for result in data.get("Results", []):
+              target = result.get("Target", "")
+              for v in result.get("Vulnerabilities", []) or []:
+                  vulns.append({
+                      "target": target,
+                      "id": v.get("VulnerabilityID", "N/A"),
+                      "severity": v.get("Severity", "UNKNOWN"),
+                      "pkg": v.get("PkgName", "N/A"),
+                      "installed": v.get("InstalledVersion", "N/A"),
+                      "fixed": v.get("FixedVersion", "N/A") or "N/A",
+                      "title": v.get("Title") or v.get("Description") or ""
+                  })
+
+          counts = Counter(v["severity"] for v in vulns)
+          total = len(vulns)
+
+          with open("trivy-summary.md", "w", encoding="utf-8") as out:
+              out.write("## Trivy Image Scan Summary\n\n")
+              out.write(f"- **Image:** `{data.get('ArtifactName', 'N/A')}`\n")
+              out.write(f"- **Total HIGH/CRITICAL findings:** **{total}**\n")
+              out.write(f"- **Critical:** {counts.get('CRITICAL', 0)}\n")
+              out.write(f"- **High:** {counts.get('HIGH', 0)}\n\n")
+
+              if vulns:
+                  out.write("| CVE ID | Severity | Package | Installed | Fixed |\n")
+                  out.write("|---|---|---|---|---|\n")
+                  for v in vulns[:50]:
+                      out.write(f"| {v['id']} | {v['severity']} | `{v['pkg']}` | `{v['installed']}` | `{v['fixed']}` |\n")
+
+                  if len(vulns) > 50:
+                      out.write(f"\n_Only first 50 findings shown in table. Total findings: {total}_\n")
+
+                  out.write("\n<details><summary>Detailed findings</summary>\n\n")
+                  for i, v in enumerate(vulns[:100], start=1):
+                      out.write(f"### {i}. {v['id']} ({v['severity']})\n")
+                      out.write(f"- Package: `{v['pkg']}`\n")
+                      out.write(f"- Installed: `{v['installed']}`\n")
+                      out.write(f"- Fixed: `{v['fixed']}`\n")
+                      out.write(f"- Target: `{v['target']}`\n")
+                      if v["title"]:
+                          out.write(f"- Detail: {v['title']}\n")
+                      out.write("\n")
+                  out.write("</details>\n")
+              else:
+                  out.write("No HIGH or CRITICAL vulnerabilities found.\n")
+
+          PY
+
+          cat trivy-summary.md >> "$GITHUB_STEP_SUMMARY"
 
   cosign-sign:
     runs-on: ubuntu-latest
