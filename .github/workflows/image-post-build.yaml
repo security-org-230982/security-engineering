@@ -12,10 +12,12 @@ permissions:
   packages: write
   security-events: write
   id-token: write
+  actions: read
 
 jobs:
-  trivy-image:
+  trivy-image-and-sbom:
     runs-on: ubuntu-latest
+
     steps:
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -26,6 +28,9 @@ jobs:
 
       - name: Install Trivy
         uses: aquasecurity/setup-trivy@v0.2.2
+
+      - name: Verify image is reachable
+        run: docker buildx imagetools inspect "${{ inputs.image-ref }}"
 
       - name: Generate Trivy SARIF report
         run: |
@@ -50,61 +55,124 @@ jobs:
             --ignore-unfixed \
             "${{ inputs.image-ref }}"
 
-      - name: Add Trivy summary
+      - name: Generate CycloneDX SBOM
+        run: |
+          trivy image \
+            --format cyclonedx \
+            --output sbom.cdx.json \
+            "${{ inputs.image-ref }}"
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+
+      - name: Scan SBOM for vulnerabilities (JSON)
+        run: |
+          trivy sbom \
+            --format json \
+            --output sbom-vuln-results.json \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            sbom.cdx.json
+
+      - name: Add Trivy image + SBOM summaries
         shell: bash
         run: |
           python3 <<'PY'
           import json
           from collections import Counter
 
+          def collect_trivy_vulns(data):
+              vulns = []
+              for result in data.get("Results", []):
+                  target = result.get("Target", "")
+                  for v in result.get("Vulnerabilities", []) or []:
+                      vulns.append({
+                          "target": target,
+                          "id": v.get("VulnerabilityID", "N/A"),
+                          "severity": v.get("Severity", "UNKNOWN"),
+                          "pkg": v.get("PkgName", "N/A"),
+                          "installed": v.get("InstalledVersion", "N/A"),
+                          "fixed": v.get("FixedVersion") or "N/A",
+                          "title": (v.get("Title") or v.get("Description") or "").replace("\n", " ").strip()
+                      })
+              return vulns
+
+          def write_table(out, rows, limit=50):
+              out.write("| CVE ID | Severity | Package | Installed | Fixed |\n")
+              out.write("|---|---|---|---|---|\n")
+              for v in rows[:limit]:
+                  out.write(f"| {v['id']} | {v['severity']} | `{v['pkg']}` | `{v['installed']}` | `{v['fixed']}` |\n")
+              if len(rows) > limit:
+                  out.write(f"\n_Only first {limit} findings shown. Total findings: {len(rows)}._\n")
+
           with open("trivy-image-results.json", "r", encoding="utf-8") as f:
-              data = json.load(f)
+              image_data = json.load(f)
 
-          vulns = []
-          for result in data.get("Results", []):
-              target = result.get("Target", "")
-              for v in result.get("Vulnerabilities", []) or []:
-                  vulns.append({
-                      "target": target,
-                      "id": v.get("VulnerabilityID", "N/A"),
-                      "severity": v.get("Severity", "UNKNOWN"),
-                      "pkg": v.get("PkgName", "N/A"),
-                      "installed": v.get("InstalledVersion", "N/A"),
-                      "fixed": v.get("FixedVersion") or "N/A",
-                  })
+          with open("sbom-vuln-results.json", "r", encoding="utf-8") as f:
+              sbom_data = json.load(f)
 
-          counts = Counter(v["severity"] for v in vulns)
+          image_vulns = collect_trivy_vulns(image_data)
+          sbom_vulns = collect_trivy_vulns(sbom_data)
 
-          with open("trivy-summary.md", "w", encoding="utf-8") as out:
+          image_counts = Counter(v["severity"] for v in image_vulns)
+          sbom_counts = Counter(v["severity"] for v in sbom_vulns)
+
+          with open("security-summary.md", "w", encoding="utf-8") as out:
               out.write("## Trivy Image Scan Summary\n\n")
-              out.write(f"- **Total findings:** **{len(vulns)}**\n")
-              out.write(f"- **Critical:** {counts.get('CRITICAL', 0)}\n")
-              out.write(f"- **High:** {counts.get('HIGH', 0)}\n\n")
+              out.write(f"- **Image:** `{image_data.get('ArtifactName', 'N/A')}`\n")
+              out.write(f"- **Total findings:** **{len(image_vulns)}**\n")
+              out.write(f"- **Critical:** {image_counts.get('CRITICAL', 0)}\n")
+              out.write(f"- **High:** {image_counts.get('HIGH', 0)}\n\n")
 
-              if vulns:
-                  out.write("| CVE ID | Severity | Package | Installed | Fixed |\n")
-                  out.write("|---|---|---|---|---|\n")
-                  for v in vulns[:50]:
-                      out.write(f"| {v['id']} | {v['severity']} | `{v['pkg']}` | `{v['installed']}` | `{v['fixed']}` |\n")
+              if image_vulns:
+                  write_table(out, image_vulns)
+                  out.write("\n<details><summary>Detailed Trivy image findings</summary>\n\n")
+                  for i, v in enumerate(image_vulns[:100], start=1):
+                      out.write(f"### {i}. {v['id']} ({v['severity']})\n")
+                      out.write(f"- Package: `{v['pkg']}`\n")
+                      out.write(f"- Installed: `{v['installed']}`\n")
+                      out.write(f"- Fixed: `{v['fixed']}`\n")
+                      out.write(f"- Target: `{v['target']}`\n")
+                      if v["title"]:
+                          out.write(f"- Detail: {v['title']}\n")
+                      out.write("\n")
+                  out.write("</details>\n\n")
               else:
-                  out.write("No HIGH/CRITICAL vulnerabilities found.\n")
+                  out.write("No HIGH/CRITICAL vulnerabilities found in the container image.\n\n")
+
+              out.write("## SBOM Summary\n\n")
+              out.write("- **Format:** `CycloneDX JSON`\n")
+              out.write("- **Artifact:** `sbom.cdx.json`\n")
+              out.write(f"- **SBOM vulnerability findings:** **{len(sbom_vulns)}**\n")
+              out.write(f"- **Critical:** {sbom_counts.get('CRITICAL', 0)}\n")
+              out.write(f"- **High:** {sbom_counts.get('HIGH', 0)}\n\n")
+
+              if sbom_vulns:
+                  write_table(out, sbom_vulns)
+                  out.write("\n<details><summary>Detailed SBOM vulnerability findings</summary>\n\n")
+                  for i, v in enumerate(sbom_vulns[:100], start=1):
+                      out.write(f"### {i}. {v['id']} ({v['severity']})\n")
+                      out.write(f"- Package: `{v['pkg']}`\n")
+                      out.write(f"- Installed: `{v['installed']}`\n")
+                      out.write(f"- Fixed: `{v['fixed']}`\n")
+                      out.write(f"- Target: `{v['target']}`\n")
+                      if v["title"]:
+                          out.write(f"- Detail: {v['title']}\n")
+                      out.write("\n")
+                  out.write("</details>\n")
+              else:
+                  out.write("No HIGH/CRITICAL vulnerabilities found from SBOM scanning.\n")
 
           PY
 
-          cat trivy-summary.md >> "$GITHUB_STEP_SUMMARY"
-
-      # - name: Enforce Trivy policy
-      #   run: |
-      #     trivy image \
-      #       --format table \
-      #       --severity HIGH,CRITICAL \
-      #       --ignore-unfixed \
-      #       --exit-code 1 \
-      #       "${{ inputs.image-ref }}"
+          cat security-summary.md >> "$GITHUB_STEP_SUMMARY"
 
   cosign-sign:
     runs-on: ubuntu-latest
-    needs: trivy-image
+    needs: trivy-image-and-sbom
     steps:
       - name: Log in to GHCR
         uses: docker/login-action@v3
