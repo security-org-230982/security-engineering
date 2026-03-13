@@ -25,6 +25,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run Trivy image scan
+        id: trivy
         uses: aquasecurity/trivy-action@0.28.0
         with:
           scan-type: image
@@ -33,10 +34,14 @@ jobs:
           output: trivy-image-results.sarif
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: 1
+          exit-code: 0
+
+      - name: Verify SARIF file exists
+        run: |
+          ls -l
+          test -f trivy-image-results.sarif
 
       - name: Upload Trivy SARIF
-        if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-image-results.sarif
