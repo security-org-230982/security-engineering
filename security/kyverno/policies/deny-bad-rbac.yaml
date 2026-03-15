@@ -1,0 +1,47 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: deny-bad-rbac
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: deny-wildcard-clusterroles
+      match:
+        any:
+          - resources:
+              kinds:
+                - Role
+                - ClusterRole
+      validate:
+        message: "Wildcard verbs, resources, or apiGroups are not allowed in Role/ClusterRole rules."
+        foreach:
+          - list: "request.object.rules || `[]`"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ contains(element.verbs || `[]`, '*') }}"
+                    operator: Equals
+                    value: true
+                  - key: "{{ contains(element.resources || `[]`, '*') }}"
+                    operator: Equals
+                    value: true
+                  - key: "{{ contains(element.apiGroups || `[]`, '*') }}"
+                    operator: Equals
+                    value: true
+
+    - name: deny-cluster-admin-bindings
+      match:
+        any:
+          - resources:
+              kinds:
+                - RoleBinding
+                - ClusterRoleBinding
+      validate:
+        message: "Bindings to cluster-admin are not allowed."
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.roleRef.name }}"
+                operator: Equals
+                value: cluster-admin

@@ -6,17 +6,20 @@ spec:
   validationFailureAction: Enforce
   background: false
   rules:
-    - name: verify-image-signatures
+    - name: verify-product-images
       match:
         any:
           - resources:
-              kinds: ["Pod"]
+              kinds:
+                - Pod
       verifyImages:
         - imageReferences:
-            - "ghcr.io/your-org/*"
+            - "ghcr.io/security-org-230982/*"
+          required: true
           mutateDigest: true
+          verifyDigest: true
           attestors:
             - entries:
                 - keyless:
-                    issuer: https://token.actions.githubusercontent.com
-                    subject: "https://github.com/your-org/product-engineering/.github/workflows/build-test-publish.yaml@refs/heads/main"
+                    issuer: "https://token.actions.githubusercontent.com"
+                    subject: "https://github.com/security-org-230982/product-engineering/.github/workflows/build-test-publish.yaml@refs/heads/main"

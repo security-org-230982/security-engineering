@@ -1,0 +1,42 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-security-context
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-pod-security-context
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "Pods must define podSecurityContext.fsGroup."
+        pattern:
+          spec:
+            securityContext:
+              fsGroup: ">0"
+
+    - name: require-container-security-context
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "Containers must set runAsNonRoot, readOnlyRootFilesystem, and disallow privilege escalation."
+        foreach:
+          - list: "request.object.spec.containers"
+            pattern:
+              securityContext:
+                runAsNonRoot: true
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+          - list: "request.object.spec.initContainers || `[]`"
+            pattern:
+              securityContext:
+                runAsNonRoot: true
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
