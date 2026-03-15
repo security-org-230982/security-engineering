@@ -1,2 +1,0 @@
-- macro: game_container
-  condition: container.image.repository startswith ghcr.io/your-org/simple-game

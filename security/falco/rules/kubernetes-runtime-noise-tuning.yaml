@@ -1,0 +1,58 @@
+- list: known_safe_namespaces
+  items: [kube-system, falco, kyverno]
+
+- list: known_safe_images
+  items:
+    - "ghcr.io/security-org-230982/simple-game"
+    - "public.ecr.aws/eks-distro/*"
+    - "public.ecr.aws/aws-observability/*"
+
+- macro: known_safe_k8s_namespace
+  condition: k8s.ns.name in (known_safe_namespaces)
+
+- macro: known_safe_image
+  condition: container.image.repository in (known_safe_images)
+
+- rule: K8s Unexpected Outbound Connection
+  override:
+    condition: replace
+  condition: >
+    outbound and container and
+    not known_safe_k8s_namespace and
+    not known_safe_image
+
+- rule: K8s Download Tool Execution In Container
+  override:
+    condition: replace
+  condition: >
+    spawned_process and container and
+    proc.name in (curl, wget, aria2c, nc, ncat) and
+    not known_safe_k8s_namespace and
+    not known_safe_image
+
+- rule: K8s Suspicious Network Tool In Container
+  override:
+    condition: replace
+  condition: >
+    spawned_process and container and
+    proc.name in (nc, ncat, socat, tcpdump, tshark) and
+    not known_safe_k8s_namespace and
+    not known_safe_image
+
+- rule: K8s Terminal Shell In Container
+  override:
+    condition: replace
+  condition: >
+    spawned_process and container and
+    proc.name in (bash, sh, zsh, ksh, ash, dash) and
+    not known_safe_k8s_namespace and
+    not known_safe_image
+
+- rule: K8s Contact Kube API From Container
+  override:
+    condition: replace
+  condition: >
+    outbound and container and
+    fd.sip.name = "kubernetes.default.svc.cluster.local" and
+    not known_safe_k8s_namespace and
+    not known_safe_image

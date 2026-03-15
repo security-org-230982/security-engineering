@@ -1,0 +1,227 @@
+- macro: user_known_shell_spawn
+  condition: >
+    proc.pname in (kubectl, helm, ansible, terraform)
+
+- macro: container_shell
+  condition: >
+    spawned_process and container and proc.name in (bash, sh, zsh, ksh, ash, dash)
+
+- macro: sensitive_k8s_paths
+  condition: >
+    fd.name startswith /var/run/secrets/kubernetes.io or
+    fd.name contains "/serviceaccount/token" or
+    fd.name contains "/serviceaccount/ca.crt" or
+    fd.name contains "/serviceaccount/namespace"
+
+- macro: sensitive_host_paths
+  condition: >
+    fd.name startswith /etc or
+    fd.name startswith /root or
+    fd.name startswith /home or
+    fd.name startswith /var/lib/kubelet or
+    fd.name startswith /var/run/docker.sock or
+    fd.name startswith /run/containerd/containerd.sock
+
+- macro: package_mgmt_procs
+  condition: >
+    proc.name in (apt, apt-get, apk, dpkg, rpm, yum, dnf, microdnf)
+
+- macro: download_procs
+  condition: >
+    proc.name in (curl, wget, aria2c, nc, ncat)
+
+- macro: suspicious_net_tools
+  condition: >
+    proc.name in (nc, ncat, socat, tcpdump, tshark)
+
+- macro: crypto_miners
+  condition: >
+    proc.name in (xmrig, minerd, cryptonight, kworkerds, kinsing)
+
+- macro: k8s_client_tools
+  condition: >
+    proc.name in (kubectl, kubelet, kube-proxy)
+
+- rule: K8s Terminal Shell In Container
+  desc: Detect interactive shell execution in a container.
+  condition: >
+    container_shell and not user_known_shell_spawn
+  output: >
+    Falco: shell spawned in container
+    (user=%user.name pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name image=%container.image.repository proc=%proc.cmdline)
+  priority: WARNING
+  tags: [kubernetes, container, shell, mitre_execution]
+
+- rule: K8s Privileged Container Started
+  desc: Detect containers started as privileged.
+  condition: >
+    container_started and container.privileged=true
+  output: >
+    Falco: privileged container started
+    (pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name image=%container.image.repository)
+  priority: CRITICAL
+  tags: [kubernetes, privilege_escalation, mitre_privilege_escalation]
+
+- rule: K8s Write Below Sensitive Host Paths
+  desc: Detect container write activity to sensitive host paths.
+  condition: >
+    open_write and container and sensitive_host_paths
+  output: >
+    Falco: write to sensitive host path
+    (user=%user.name pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name file=%fd.name proc=%proc.cmdline)
+  priority: CRITICAL
+  tags: [kubernetes, filesystem, host, mitre_persistence]
+
+- rule: K8s Read Service Account Token
+  desc: Detect reads of mounted Kubernetes service account tokens.
+  condition: >
+    open_read and container and sensitive_k8s_paths
+  output: >
+    Falco: service account token or related secret read
+    (user=%user.name pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name file=%fd.name proc=%proc.cmdline)
+  priority: WARNING
+  tags: [kubernetes, secrets, credential_access, mitre_credential_access]
+
+- rule: K8s Exec Into Running Container
+  desc: Detect exec into a running container via shell or command.
+  condition: >
+    spawned_process and container and proc.aname[2] = runc
+  output: >
+    Falco: possible exec into container
+    (user=%user.name pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name proc=%proc.cmdline parent=%proc.pcmdline)
+  priority: NOTICE
+  tags: [kubernetes, exec, mitre_execution]
+
+- rule: K8s Package Management In Container
+  desc: Detect package manager execution inside a container.
+  condition: >
+    spawned_process and container and package_mgmt_procs
+  output: >
+    Falco: package manager execution in container
+    (user=%user.name pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name proc=%proc.cmdline)
+  priority: WARNING
+  tags: [kubernetes, container, packages, mitre_persistence]
+
+- rule: K8s Download Tool Execution In Container
+  desc: Detect curl/wget/netcat-like tools executed inside a container.
+  condition: >
+    spawned_process and container and download_procs
+  output: >
+    Falco: download or fetch tool executed in container
+    (user=%user.name pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name proc=%proc.cmdline)
+  priority: WARNING
+  tags: [kubernetes, network, mitre_command_and_control]
+
+- rule: K8s Suspicious Network Tool In Container
+  desc: Detect suspicious networking tools in a container.
+  condition: >
+    spawned_process and container and suspicious_net_tools
+  output: >
+    Falco: suspicious network tool executed in container
+    (user=%user.name pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name proc=%proc.cmdline)
+  priority: WARNING
+  tags: [kubernetes, network, reconnaissance, mitre_discovery]
+
+- rule: K8s Crypto Miner Detected
+  desc: Detect known crypto mining processes in containers.
+  condition: >
+    spawned_process and container and crypto_miners
+  output: >
+    Falco: crypto miner process detected
+    (user=%user.name pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name proc=%proc.cmdline)
+  priority: CRITICAL
+  tags: [kubernetes, crypto, mitre_impact]
+
+- rule: K8s Unexpected Outbound Connection
+  desc: Detect outbound connections from containers.
+  condition: >
+    outbound and container
+  output: >
+    Falco: outbound network connection from container
+    (pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name fd=%fd.name proc=%proc.cmdline)
+  priority: NOTICE
+  tags: [kubernetes, network, mitre_command_and_control]
+
+- rule: K8s Contact Kube API From Container
+  desc: Detect containers directly connecting to the Kubernetes API server.
+  condition: >
+    outbound and container and fd.sip.name = "kubernetes.default.svc.cluster.local"
+  output: >
+    Falco: container contacting Kubernetes API
+    (pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name proc=%proc.cmdline conn=%fd.name)
+  priority: WARNING
+  tags: [kubernetes, api, discovery, mitre_discovery]
+
+- rule: K8s Modify Binaries Or Scripts In Container
+  desc: Detect writes to common executable paths in containers.
+  condition: >
+    open_write and container and
+    (fd.name startswith /bin or fd.name startswith /sbin or fd.name startswith /usr/bin or fd.name startswith /usr/sbin)
+  output: >
+    Falco: write to executable path in container
+    (pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name file=%fd.name proc=%proc.cmdline)
+  priority: WARNING
+  tags: [kubernetes, filesystem, mitre_persistence]
+
+- rule: K8s Container Started With Host Network
+  desc: Detect containers using hostNetwork.
+  condition: >
+    container_started and k8s.pod.host_network=true
+  output: >
+    Falco: container started with hostNetwork
+    (pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name image=%container.image.repository)
+  priority: WARNING
+  tags: [kubernetes, networking, privilege_escalation]
+
+- rule: K8s Container Started With Host PID Namespace
+  desc: Detect containers using host PID namespace.
+  condition: >
+    container_started and k8s.pod.host_pid=true
+  output: >
+    Falco: container started with hostPID
+    (pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name image=%container.image.repository)
+  priority: CRITICAL
+  tags: [kubernetes, host, privilege_escalation]
+
+- rule: K8s Container Started With Host IPC Namespace
+  desc: Detect containers using host IPC namespace.
+  condition: >
+    container_started and k8s.pod.host_ipc=true
+  output: >
+    Falco: container started with hostIPC
+    (pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name image=%container.image.repository)
+  priority: CRITICAL
+  tags: [kubernetes, host, privilege_escalation]
+
+- rule: K8s Access Container Runtime Socket
+  desc: Detect access to Docker or containerd sockets from containers.
+  condition: >
+    (open_read or open_write) and container and
+    (fd.name=/var/run/docker.sock or fd.name=/run/containerd/containerd.sock)
+  output: >
+    Falco: container runtime socket accessed
+    (pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name file=%fd.name proc=%proc.cmdline)
+  priority: CRITICAL
+  tags: [kubernetes, runtime, container_escape, mitre_privilege_escalation]
+
+- rule: K8s Mount Sensitive Paths Via HostPath
+  desc: Detect containers accessing likely hostPath-mounted sensitive locations.
+  condition: >
+    (open_read or open_write) and container and
+    (fd.name startswith /host/etc or fd.name startswith /host/proc or fd.name startswith /host/sys)
+  output: >
+    Falco: possible hostPath sensitive mount access
+    (pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name file=%fd.name proc=%proc.cmdline)
+  priority: CRITICAL
+  tags: [kubernetes, hostpath, container_escape]
+
+- rule: K8s Modify Cron Or Init Scripts
+  desc: Detect writes to cron or init-related files in containers.
+  condition: >
+    open_write and container and
+    (fd.name startswith /etc/cron or fd.name startswith /etc/init.d or fd.name startswith /etc/rc.d)
+  output: >
+    Falco: cron/init script modified in container
+    (pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name file=%fd.name proc=%proc.cmdline)
+  priority: WARNING
+  tags: [kubernetes, persistence, mitre_persistence]

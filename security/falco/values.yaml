@@ -4,10 +4,7 @@ falco:
   grpcOutput:
     enabled: true
   jsonOutput: true
+
 customRules:
   rules-game.yaml: |
-    - rule: Terminal shell in container
-      desc: Detect shell execution inside a container
-      condition: container and proc.name in (bash, sh, zsh)
-      output: "Shell executed in container (user=%user.name container=%container.name cmd=%proc.cmdline)"
-      priority: WARNING
+    {{ .Files.Get "rules/rules-game.yaml" | indent 4 }}
