@@ -170,18 +170,80 @@ jobs:
           cat security-summary.md >> "$GITHUB_STEP_SUMMARY"
 
   cosign-sign:
-    runs-on: ubuntu-latest
-    needs: trivy-image-and-sbom
-    steps:
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+  runs-on: ubuntu-latest
+  needs: trivy-image-and-sbom
 
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@v3
+  steps:
+    - name: Log in to GHCR
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Sign image
-        run: cosign sign --yes "${{ inputs.image-ref }}"
+    - name: Install Cosign
+      uses: sigstore/cosign-installer@v3
+
+    - name: Sign image
+      run: cosign sign --yes "${{ inputs.image-ref }}"
+
+    - name: Verify image signature and identity
+      id: cosign_verify
+      shell: bash
+      run: |
+        set +e
+
+        EXPECTED_IDENTITY="https://github.com/security-org-230982/security-engineering/.github/workflows/image-post-build.yaml@refs/heads/main"
+        ISSUER="https://token.actions.githubusercontent.com"
+
+        VERIFY_OUTPUT=$(cosign verify \
+          --certificate-identity "$EXPECTED_IDENTITY" \
+          --certificate-oidc-issuer "$ISSUER" \
+          "${{ inputs.image-ref }}" 2>&1)
+
+        STATUS=$?
+
+        echo "COSIGN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
+        echo "$VERIFY_OUTPUT" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+        echo "EXPECTED_IDENTITY=$EXPECTED_IDENTITY" >> $GITHUB_OUTPUT
+        echo "ISSUER=$ISSUER" >> $GITHUB_OUTPUT
+
+        if [ $STATUS -eq 0 ]; then
+          echo "COSIGN_STATUS=PASS" >> $GITHUB_OUTPUT
+        else
+          echo "COSIGN_STATUS=FAIL" >> $GITHUB_OUTPUT
+        fi
+
+        exit 0
+
+    - name: Add Cosign summary
+      shell: bash
+      run: |
+        echo "## Cosign Image Signing & Verification" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+
+        echo "- Image: \`${{ inputs.image-ref }}\`" >> "$GITHUB_STEP_SUMMARY"
+        echo "- Verification Status: **${{ steps.cosign_verify.outputs.COSIGN_STATUS }}**" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+
+        echo "### Expected Identity" >> "$GITHUB_STEP_SUMMARY"
+        echo "- \`${{ steps.cosign_verify.outputs.EXPECTED_IDENTITY }}\`" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+
+        echo "### OIDC Issuer" >> "$GITHUB_STEP_SUMMARY"
+        echo "- \`${{ steps.cosign_verify.outputs.ISSUER }}\`" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+
+        echo "### Verification Details" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo '```' >> "$GITHUB_STEP_SUMMARY"
+        echo "${{ steps.cosign_verify.outputs.COSIGN_OUTPUT }}" >> "$GITHUB_STEP_SUMMARY"
+        echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Fail if verification failed (enforcement)
+      if: steps.cosign_verify.outputs.COSIGN_STATUS == 'FAIL'
+      run: |
+        echo "Cosign verification failed: identity mismatch or signature invalid"
+        exit 1
