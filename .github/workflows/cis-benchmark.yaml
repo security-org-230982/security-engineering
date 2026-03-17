@@ -14,18 +14,60 @@ jobs:
 
     steps:
       - name: Run kube-bench
-        run: kube-bench --targets node,policies --json > kube-bench.json || true
+        shell: sh
+        run: |
+          kube-bench --targets node,policies --json > kube-bench.json 2> kube-bench.stderr || true
 
-      - name: Add CIS benchmark summary
+      - name: Validate kube-bench output
         shell: sh
         run: |
           echo "## CIS Benchmark Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ ! -f kube-bench.json ] || [ ! -s kube-bench.json ]; then
+            echo "- kube-bench.json missing or empty." >> "$GITHUB_STEP_SUMMARY"
+            echo "- stderr output:" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat kube-bench.stderr >> "$GITHUB_STEP_SUMMARY" || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if ! jq empty kube-bench.json >/dev/null 2>&1; then
+            echo "- kube-bench output is not valid JSON." >> "$GITHUB_STEP_SUMMARY"
+            echo "- First lines of kube-bench.json:" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            sed -n '1,40p' kube-bench.json >> "$GITHUB_STEP_SUMMARY" || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "- stderr output:" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat kube-bench.stderr >> "$GITHUB_STEP_SUMMARY" || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          TOTAL=$(jq '[.. | objects | select(has("status"))] | length' kube-bench.json)
+          PASS=$(jq '[.. | objects | select(.status=="PASS")] | length' kube-bench.json)
+          FAIL=$(jq '[.. | objects | select(.status=="FAIL")] | length' kube-bench.json)
+          WARN=$(jq '[.. | objects | select(.status=="WARN")] | length' kube-bench.json)
+          INFO=$(jq '[.. | objects | select(.status=="INFO")] | length' kube-bench.json)
+
           echo "- kube-bench scan completed." >> "$GITHUB_STEP_SUMMARY"
           echo "- Artifact: \`kube-bench.json\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Total checks: ${TOTAL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- PASS: ${PASS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- FAIL: ${FAIL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- WARN: ${WARN}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- INFO: ${INFO}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload kube-bench artifact
         uses: actions/upload-artifact@v4
         with:
           name: kube-bench
           path: kube-bench.json
+
+      - name: Upload kube-bench stderr
+        uses: actions/upload-artifact@v4
+        with:
+          name: kube-bench-stderr
+          path: kube-bench.stderr
