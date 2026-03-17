@@ -1,0 +1,85 @@
+name: pod-security-admission
+
+on:
+  workflow_call:
+    inputs:
+      eks-cluster-name:
+        required: true
+        type: string
+      aws-region:
+        required: false
+        type: string
+        default: us-east-1
+      namespace:
+        required: true
+        type: string
+      expected-level:
+        required: false
+        type: string
+        default: restricted
+      expected-version:
+        required: true
+        type: string
+    secrets:
+      aws-role-to-assume:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  psa-alignment-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.aws-role-to-assume }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name "${{ inputs.eks-cluster-name }}" \
+            --region "${{ inputs.aws-region }}"
+
+      - name: Verify Pod Security Admission labels
+        shell: bash
+        run: |
+          NS="${{ inputs.namespace }}"
+          LEVEL="${{ inputs.expected-level }}"
+          VERSION="${{ inputs.expected-version }}"
+
+          ENFORCE=$(kubectl get ns "$NS" -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}')
+          ENFORCE_VERSION=$(kubectl get ns "$NS" -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce-version}')
+          AUDIT=$(kubectl get ns "$NS" -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/audit}')
+          AUDIT_VERSION=$(kubectl get ns "$NS" -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/audit-version}')
+          WARN=$(kubectl get ns "$NS" -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/warn}')
+          WARN_VERSION=$(kubectl get ns "$NS" -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/warn-version}')
+
+          {
+            echo "## PSA Alignment Check"
+            echo ""
+            echo "- Namespace: \`$NS\`"
+            echo "- Expected level: \`$LEVEL\`"
+            echo "- Expected version: \`$VERSION\`"
+            echo ""
+            echo "### Actual Labels"
+            echo "- enforce=$ENFORCE"
+            echo "- enforce-version=$ENFORCE_VERSION"
+            echo "- audit=$AUDIT"
+            echo "- audit-version=$AUDIT_VERSION"
+            echo "- warn=$WARN"
+            echo "- warn-version=$WARN_VERSION"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          test "$ENFORCE" = "$LEVEL"
+          test "$ENFORCE_VERSION" = "$VERSION"
+          test "$AUDIT" = "$LEVEL"
+          test "$AUDIT_VERSION" = "$VERSION"
+          test "$WARN" = "$LEVEL"
+          test "$WARN_VERSION" = "$VERSION"

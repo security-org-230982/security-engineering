@@ -8,7 +8,7 @@ permissions:
   security-events: write
 
 jobs:
-  trivy-config-scan:
+  iac-config-scan:
     runs-on: ubuntu-latest
 
     steps:

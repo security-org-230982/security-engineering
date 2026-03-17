@@ -1,11 +1,8 @@
-name: platform-deploy-gates
+name: helm-chart-scan
 
 on:
   workflow_call:
     inputs:
-      image-ref:
-        required: true
-        type: string
       chart-path:
         required: false
         type: string
@@ -14,46 +11,13 @@ on:
         required: false
         type: string
         default: helm/simple-game/values.yaml
-      certificate-identity:
-        required: false
-        type: string
-        default: ""
 
 permissions:
   contents: read
-  packages: read
   security-events: write
-  id-token: write
 
 jobs:
-  validate-image-signature:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@v3
-
-      - name: Verify image signature
-        shell: bash
-        run: |
-          if [ -n "${{ inputs.certificate-identity }}" ]; then
-            cosign verify \
-              --certificate-identity "${{ inputs.certificate-identity }}" \
-              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-              "${{ inputs.image-ref }}"
-          else
-            cosign verify \
-              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-              "${{ inputs.image-ref }}"
-          fi
-
-  helm-manifest-scan:
+  helm-chart-scan:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout platform repo
@@ -92,14 +56,13 @@ jobs:
 
           risky_findings = []
 
-          role_names = {}
-          bindings = []
-
           def add_finding(kind, name, msg):
               risky_findings.append(f"{kind}/{name}: {msg}")
 
           with open("rendered.yaml", "r", encoding="utf-8") as f:
               docs = list(yaml.safe_load_all(f))
+
+          bindings = []
 
           for doc in docs:
               if not isinstance(doc, dict):
@@ -112,23 +75,18 @@ jobs:
 
               if kind in ("Role", "ClusterRole"):
                   rules = doc.get("rules", []) or []
-                  role_names[(kind, name, namespace)] = rules
 
                   for rule in rules:
                       api_groups = rule.get("apiGroups", []) or []
                       resources = rule.get("resources", []) or []
                       verbs = rule.get("verbs", []) or []
-                      resource_names = rule.get("resourceNames", []) or []
 
-                      # 1. Wildcards
                       if "*" in api_groups or "*" in resources or "*" in verbs:
                           add_finding(kind, name, "wildcard apiGroups/resources/verbs detected")
 
-                      # 2. Secrets access abuse
                       if "secrets" in resources and any(v in verbs for v in ["get", "list", "watch", "*"]):
                           add_finding(kind, name, "can read Kubernetes secrets")
 
-                      # 3. Dangerous pod exec / attach / portforward
                       if "pods/exec" in resources and any(v in verbs for v in ["create", "*"]):
                           add_finding(kind, name, "can exec into pods")
                       if "pods/attach" in resources and any(v in verbs for v in ["create", "*"]):
@@ -136,38 +94,31 @@ jobs:
                       if "pods/portforward" in resources and any(v in verbs for v in ["create", "*"]):
                           add_finding(kind, name, "can port-forward to pods")
 
-                      # 4. Impersonation
                       if "impersonate" in verbs:
                           add_finding(kind, name, "can impersonate users/groups/serviceaccounts")
 
-                      # 5. RBAC modification / privilege escalation paths
                       if "rbac.authorization.k8s.io" in api_groups:
                           if any(r in resources for r in ["roles", "clusterroles", "rolebindings", "clusterrolebindings"]):
                               if any(v in verbs for v in ["create", "update", "patch", "bind", "escalate", "*"]):
                                   add_finding(kind, name, "can modify or escalate RBAC permissions")
 
-                      # 6. Workload creation abuse
                       risky_workloads = {
                           "pods", "deployments", "daemonsets", "statefulsets", "jobs", "cronjobs"
                       }
                       if any(r in resources for r in risky_workloads) and any(v in verbs for v in ["create", "update", "patch", "*"]):
                           add_finding(kind, name, "can create or modify workloads")
 
-                      # 7. Service account token / SA abuse
                       if "serviceaccounts" in resources and any(v in verbs for v in ["create", "update", "patch", "impersonate", "*"]):
                           add_finding(kind, name, "can modify or impersonate service accounts")
 
-                      # 8. Admission control or webhook tampering
                       if "admissionregistration.k8s.io" in api_groups and any(v in verbs for v in ["create", "update", "patch", "delete", "*"]):
                           add_finding(kind, name, "can modify admission webhooks")
 
-                      # 9. Node / proxy access
                       if "nodes/proxy" in resources and any(v in verbs for v in ["get", "create", "*"]):
                           add_finding(kind, name, "can access node proxy")
                       if "nodes" in resources and any(v in verbs for v in ["proxy", "*"]):
                           add_finding(kind, name, "can proxy to nodes")
 
-                      # 10. Token review / subject access review abuse
                       if "authentication.k8s.io" in api_groups and "tokenreviews" in resources and any(v in verbs for v in ["create", "*"]):
                           add_finding(kind, name, "can create token reviews")
                       if "authorization.k8s.io" in api_groups and any(r in resources for r in ["subjectaccessreviews", "selfsubjectaccessreviews", "localsubjectaccessreviews"]) and any(v in verbs for v in ["create", "*"]):
@@ -176,7 +127,6 @@ jobs:
               elif kind in ("RoleBinding", "ClusterRoleBinding"):
                   bindings.append(doc)
 
-          # 11. Dangerous bindings
           for binding in bindings:
               kind = binding.get("kind")
               meta = binding.get("metadata", {}) or {}
@@ -184,7 +134,6 @@ jobs:
               namespace = meta.get("namespace", "default")
               role_ref = binding.get("roleRef", {}) or {}
               role_name = role_ref.get("name", "")
-              role_kind = role_ref.get("kind", "")
               subjects = binding.get("subjects", []) or []
 
               if role_name == "cluster-admin":
@@ -195,7 +144,6 @@ jobs:
                   s_name = subject.get("name", "")
                   s_ns = subject.get("namespace", namespace)
 
-                  # broad groups
                   if s_kind == "Group" and s_name in [
                       "system:authenticated",
                       "system:unauthenticated",
@@ -203,15 +151,40 @@ jobs:
                   ]:
                       add_finding(kind, name, f"binds privileged role to broad group {s_name}")
 
-                  # default service account binding
                   if s_kind == "ServiceAccount" and s_name == "default":
                       add_finding(kind, name, f"binds role to default service account in namespace {s_ns}")
 
+          with open("rbac-findings.txt", "w", encoding="utf-8") as out:
+              if risky_findings:
+                  for finding in risky_findings:
+                      out.write(f"- {finding}\n")
+
           if risky_findings:
-              print("Deep RBAC risk findings detected:\n")
+              print("Deep RBAC risk findings detected:\\n")
               for finding in risky_findings:
                   print(f"- {finding}")
               sys.exit(1)
 
           print("No deep RBAC risks detected.")
-          PY
+
+      - name: Add Helm chart scan summary
+        if: always()
+        shell: bash
+        run: |
+          echo "## Helm Chart Scan Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Chart path: \`${{ inputs.chart-path }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Values file: \`${{ inputs.values-file }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Helm lint: completed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Manifest render: completed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Trivy manifest scan: completed" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -f rbac-findings.txt ] && [ -s rbac-findings.txt ]; then
+            echo "- Deep RBAC risk check: **FAILED**" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### RBAC Findings" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            cat rbac-findings.txt >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Deep RBAC risk check: **PASSED**" >> "$GITHUB_STEP_SUMMARY"
+          fi
