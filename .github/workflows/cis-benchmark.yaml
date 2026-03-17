@@ -7,67 +7,153 @@ permissions:
   contents: read
 
 jobs:
-  cis-benchmark:
+  run-cis:
+    name: Run kube-bench
     runs-on: ubuntu-latest
     container:
       image: docker.io/aquasec/kube-bench:latest
 
     steps:
-      - name: Run kube-bench
+      - name: Run kube-bench (node + policies) and capture output
         shell: sh
         run: |
+          # Run kube-bench; capture stdout JSON and stderr for debugging
           kube-bench --targets node,policies --json > kube-bench.json 2> kube-bench.stderr || true
 
-      - name: Validate kube-bench output
+      - name: Show raw kube-bench stderr (for quick debugging)
+        if: always()
         shell: sh
         run: |
-          echo "## CIS Benchmark Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "===== kube-bench stderr (first 200 lines) ====="
+          sed -n '1,200p' kube-bench.stderr || true
 
-          if [ ! -f kube-bench.json ] || [ ! -s kube-bench.json ]; then
-            echo "- kube-bench.json missing or empty." >> "$GITHUB_STEP_SUMMARY"
-            echo "- stderr output:" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload kube-bench outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: kube-bench
+          path: |
+            kube-bench.json
+            kube-bench.stderr
+
+  cis-benchmark-summary:
+    name: CIS benchmark summary & findings
+    runs-on: ubuntu-latest
+    needs: run-cis
+
+    steps:
+      - name: Download kube-bench artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kube-bench
+          path: .
+
+      - name: Ensure jq available
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            echo "jq not found, installing..."
+            if [ -f /etc/debian_version ]; then
+              sudo apt-get update && sudo apt-get install -y jq
+            elif [ -f /etc/alpine-release ]; then
+              sudo apk add --no-cache jq
+            else
+              echo "Please ensure jq is available"
+            fi
+          fi
+        shell: bash
+
+      - name: Validate kube-bench output and build summary
+        shell: bash
+        run: |
+          # guard: artifact must exist and be non-empty
+          if [ ! -s kube-bench.json ]; then
+            echo "## CIS Benchmark Summary" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "- kube-bench.json is missing or empty." >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### kube-bench stderr (first 200 lines):" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
-            cat kube-bench.stderr >> "$GITHUB_STEP_SUMMARY" || true
+            sed -n '1,200p' kube-bench.stderr >> "$GITHUB_STEP_SUMMARY" || true
             echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
+          # ensure it's valid JSON
           if ! jq empty kube-bench.json >/dev/null 2>&1; then
-            echo "- kube-bench output is not valid JSON." >> "$GITHUB_STEP_SUMMARY"
-            echo "- First lines of kube-bench.json:" >> "$GITHUB_STEP_SUMMARY"
+            echo "## CIS Benchmark Summary" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "- kube-bench.json is not valid JSON." >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### kube-bench.json (first 200 lines):" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
-            sed -n '1,40p' kube-bench.json >> "$GITHUB_STEP_SUMMARY" || true
+            sed -n '1,200p' kube-bench.json >> "$GITHUB_STEP_SUMMARY" || true
             echo '```' >> "$GITHUB_STEP_SUMMARY"
-            echo "- stderr output:" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### kube-bench stderr (first 200 lines):" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
-            cat kube-bench.stderr >> "$GITHUB_STEP_SUMMARY" || true
+            sed -n '1,200p' kube-bench.stderr >> "$GITHUB_STEP_SUMMARY" || true
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
+          # aggregate counts
           TOTAL=$(jq '[.. | objects | select(has("status"))] | length' kube-bench.json)
           PASS=$(jq '[.. | objects | select(.status=="PASS")] | length' kube-bench.json)
           FAIL=$(jq '[.. | objects | select(.status=="FAIL")] | length' kube-bench.json)
           WARN=$(jq '[.. | objects | select(.status=="WARN")] | length' kube-bench.json)
           INFO=$(jq '[.. | objects | select(.status=="INFO")] | length' kube-bench.json)
 
-          echo "- kube-bench scan completed." >> "$GITHUB_STEP_SUMMARY"
-          echo "- Artifact: \`kube-bench.json\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "## CIS Benchmark Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- kube-bench scan artifact: \`kube-bench.json\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Total checks: ${TOTAL}" >> "$GITHUB_STEP_SUMMARY"
           echo "- PASS: ${PASS}" >> "$GITHUB_STEP_SUMMARY"
           echo "- FAIL: ${FAIL}" >> "$GITHUB_STEP_SUMMARY"
           echo "- WARN: ${WARN}" >> "$GITHUB_STEP_SUMMARY"
           echo "- INFO: ${INFO}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload kube-bench artifact
+          # Add top-level summary table (first 20 findings)
+          echo "### Top failed/warn findings (first 50 shown)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          jq -r '
+            .. | objects
+            | select(.status=="FAIL" or .status=="WARN")
+            | {
+                status: (.status // "N/A"),
+                test_number: (.test_number // .test_id // "N/A"),
+                test_desc: (.test_desc // .test_name // "No description"),
+                section: (.section // .group_title // .test_group // "N/A"),
+                node: (.node_name // .node // .target // "N/A"),
+                remediation: (.remediation // "N/A")
+              }
+            | "- **\(.status)** — [\(.test_number)] \(.test_desc)\n  - Section: \(.section)\n  - Node: \(.node)\n  - Remediation: \(.remediation)\n"
+          ' kube-bench.json | sed -n '1,50p' >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          # Write a detailed JSON report (filtered) for artifact + download if someone wants it
+          jq '[ .. | objects | select(.status=="FAIL" or .status=="WARN") | {status: .status, test_number: (.test_number // .test_id // "N/A"), test_desc: (.test_desc // .test_name // "No description"), section: (.section // .group_title // .test_group // "N/A"), node: (.node_name // .node // .target // "N/A"), remediation: (.remediation // "N/A")} ]' kube-bench.json > kube-bench-findings.json || true
+
+      - name: Upload findings summary artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kube-bench
-          path: kube-bench.json
+          name: kube-bench-findings
+          path: kube-bench-findings.json
 
-      - name: Upload kube-bench stderr
+      - name: Print brief log copy (optional)
+        if: always()
+        run: |
+          echo "===== kube-bench summary (first 100 lines) ====="
+          sed -n '1,100p' kube-bench-findings.json || true
+
+      - name: Upload raw kube-bench outputs (for debugging)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kube-bench-stderr
-          path: kube-bench.stderr
+          name: kube-bench-raw
+          path: |
+            kube-bench.json
+            kube-bench.stderr
