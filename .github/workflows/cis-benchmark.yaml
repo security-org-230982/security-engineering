@@ -14,11 +14,10 @@ jobs:
       image: docker.io/aquasec/kube-bench:latest
 
     steps:
-      - name: Run kube-bench (node + policies) and capture output
+      - name: Run kube-bench and capture output
         shell: sh
         run: |
-          # Run kube-bench; capture stdout JSON and stderr for debugging
-          kube-bench --targets node,policies --json > kube-bench.json 2> kube-bench.stderr || true
+          kube-bench run --json > kube-bench.json 2> kube-bench.stderr || true
 
       - name: Show raw kube-bench stderr (for quick debugging)
         if: always()
@@ -142,6 +141,7 @@ jobs:
         with:
           name: kube-bench-findings
           path: kube-bench-findings.json
+          if-no-files-found: ignore
 
       - name: Print brief log copy (optional)
         if: always()
@@ -149,7 +149,7 @@ jobs:
           echo "===== kube-bench summary (first 100 lines) ====="
           sed -n '1,100p' kube-bench-findings.json || true
 
-      - name: Upload raw kube-bench outputs (for debugging)
+      - name: Upload raw kube-bench outputs
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -157,3 +157,4 @@ jobs:
           path: |
             kube-bench.json
             kube-bench.stderr
+          if-no-files-found: ignore
