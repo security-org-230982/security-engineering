@@ -84,7 +84,7 @@ jobs:
           docker_counts = Counter(f["severity"] for f in dockerfile_findings)
 
           with open("iac-summary.md", "w", encoding="utf-8") as out:
-              out.write("## Trivy IaC Scan Summary\n\n")
+              out.write("## IaC Scan Summary\n\n")
               out.write(f"- **Total findings:** **{len(findings)}**\n")
               out.write(f"- **Critical:** {counts.get('CRITICAL', 0)}\n")
               out.write(f"- **High:** {counts.get('HIGH', 0)}\n")
