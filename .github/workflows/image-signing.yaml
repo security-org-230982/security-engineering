@@ -75,7 +75,6 @@ jobs:
                       "pkg": v.get("PkgName", "N/A"),
                       "installed": v.get("InstalledVersion", "N/A"),
                       "fixed": v.get("FixedVersion") or "N/A",
-                      "title": (v.get("Title") or v.get("Description") or "").replace("\n", " ").strip()
                   })
 
           counts = Counter(v["severity"] for v in vulns)
@@ -88,16 +87,24 @@ jobs:
               out.write(f"- **High:** {counts.get('HIGH', 0)}\n\n")
 
               if vulns:
-                  out.write("| CVE ID | Severity | Package | Installed | Fixed |\n")
-                  out.write("|---|---|---|---|---|\n")
+                  out.write("| CVE ID | Severity | Package | Installed | Fixed | Target |\n")
+                  out.write("|---|---|---|---|---|---|\n")
                   for v in vulns[:50]:
-                      out.write(f"| {v['id']} | {v['severity']} | `{v['pkg']}` | `{v['installed']}` | `{v['fixed']}` |\n")
+                      out.write(f"| {v['id']} | {v['severity']} | `{v['pkg']}` | `{v['installed']}` | `{v['fixed']}` | `{v['target']}` |\n")
               else:
                   out.write("No HIGH/CRITICAL vulnerabilities found in the container image.\n")
 
           PY
 
           cat image-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail on HIGH/CRITICAL vulnerabilities
+        run: |
+          trivy image \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            "${{ inputs.image-ref }}"
 
   cosign-sign:
     runs-on: ubuntu-latest
