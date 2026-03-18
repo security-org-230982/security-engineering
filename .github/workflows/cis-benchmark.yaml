@@ -83,13 +83,13 @@ jobs:
 
           if [ ! -s kube-bench.json ]; then
             echo "- kube-bench.json is missing or empty." >> "$GITHUB_STEP_SUMMARY"
-            echo "- [View workflow run artifacts and logs](${RUN_URL})" >> "$GITHUB_STEP_SUMMARY"
+            echo "- View artifacts in this workflow run: ${RUN_URL}" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
           if ! jq empty kube-bench.json >/dev/null 2>&1; then
             echo "- kube-bench.json is not valid JSON." >> "$GITHUB_STEP_SUMMARY"
-            echo "- [View workflow run artifacts and logs](${RUN_URL})" >> "$GITHUB_STEP_SUMMARY"
+            echo "- View artifacts in this workflow run: ${RUN_URL}" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -106,7 +106,9 @@ jobs:
           echo "- WARN: ${WARN}" >> "$GITHUB_STEP_SUMMARY"
           echo "- INFO: ${INFO}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- [Detailed CIS report artifacts](${RUN_URL})" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Detailed findings are uploaded as workflow artifacts:" >> "$GITHUB_STEP_SUMMARY"
+          echo "  - \`kube-bench-detailed-report\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "  - \`kube-bench-raw\`" >> "$GITHUB_STEP_SUMMARY"
 
           jq '
             [
@@ -132,7 +134,6 @@ jobs:
             echo "- WARN: ${WARN}"
             echo "- INFO: ${INFO}"
             echo ""
-
             echo "## Failed and Warning Findings"
             echo ""
 
@@ -148,44 +149,16 @@ jobs:
                     node: (.node_name // .node // .target // "N/A"),
                     remediation: (.remediation // "N/A")
                   }
-              ]
-            ' kube-bench.json > kube-bench-findings.json
-
-            {
-              echo "# CIS Benchmark Detailed Findings"
-              echo ""
-              echo "- Total checks: ${TOTAL}"
-              echo "- PASS: ${PASS}"
-              echo "- FAIL: ${FAIL}"
-              echo "- WARN: ${WARN}"
-              echo "- INFO: ${INFO}"
-              echo ""
-
-              echo "## Failed and Warning Findings"
-              echo ""
-
-              jq -r '
-                [
-                  .. | objects
-                  | select(.status=="FAIL" or .status=="WARN")
-                  | {
-                      status: .status,
-                      test_number: (.test_number // .test_id // "N/A"),
-                      test_desc: (.test_desc // .test_name // "No description"),
-                      section: (.section // .group_title // .test_group // "N/A"),
-                      node: (.node_name // .node // .target // "N/A"),
-                      remediation: (.remediation // "N/A")
-                    }
                 ] as $items
                 | if ($items | length) == 0 then
                     "No failed or warning findings."
                   else
                     $items[]
-                  | "### [" + .status + "] " + .test_number + "\n"
-                    + "- Description: " + .test_desc + "\n"
-                    + "- Section: " + .section + "\n"
-                    + "- Node: " + .node + "\n"
-                    + "- Remediation: " + .remediation + "\n"
-                end
+                    | "### [" + .status + "] " + .test_number + "\n"
+                      + "- Description: " + .test_desc + "\n"
+                      + "- Section: " + .section + "\n"
+                      + "- Node: " + .node + "\n"
+                      + "- Remediation: " + .remediation + "\n"
+                  end
               ' kube-bench.json
             } > kube-bench-findings.md
