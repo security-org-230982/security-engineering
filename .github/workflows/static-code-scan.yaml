@@ -1,4 +1,4 @@
-name: product-static-scans
+name: sast-scan
 
 on:
   workflow_call:
@@ -8,7 +8,7 @@ permissions:
   security-events: write
 
 jobs:
-  semgrep-sast:
+  sast-scan-status:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
