@@ -1,4 +1,4 @@
-name: image-post-build
+name: image-signing
 
 on:
   workflow_call:
@@ -14,7 +14,7 @@ permissions:
   id-token: write
 
 jobs:
-  trivy-image-and-sbom:
+  trivy-image-scan:
     runs-on: ubuntu-latest
 
     steps:
@@ -54,196 +54,122 @@ jobs:
             --ignore-unfixed \
             "${{ inputs.image-ref }}"
 
-      - name: Generate CycloneDX SBOM
-        run: |
-          trivy image \
-            --format cyclonedx \
-            --output sbom.cdx.json \
-            "${{ inputs.image-ref }}"
-
-      - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom-cyclonedx
-          path: sbom.cdx.json
-
-      - name: Scan SBOM for vulnerabilities (JSON)
-        run: |
-          trivy sbom \
-            --format json \
-            --output sbom-vuln-results.json \
-            --severity HIGH,CRITICAL \
-            --ignore-unfixed \
-            sbom.cdx.json
-
-      - name: Add Trivy image + SBOM summaries
+      - name: Add Trivy image summary
         shell: bash
         run: |
           python3 <<'PY'
           import json
           from collections import Counter
 
-          def collect_trivy_vulns(data):
-              vulns = []
-              for result in data.get("Results", []):
-                  target = result.get("Target", "")
-                  for v in result.get("Vulnerabilities", []) or []:
-                      vulns.append({
-                          "target": target,
-                          "id": v.get("VulnerabilityID", "N/A"),
-                          "severity": v.get("Severity", "UNKNOWN"),
-                          "pkg": v.get("PkgName", "N/A"),
-                          "installed": v.get("InstalledVersion", "N/A"),
-                          "fixed": v.get("FixedVersion") or "N/A",
-                          "title": (v.get("Title") or v.get("Description") or "").replace("\n", " ").strip()
-                      })
-              return vulns
-
-          def write_table(out, rows, limit=50):
-              out.write("| CVE ID | Severity | Package | Installed | Fixed |\n")
-              out.write("|---|---|---|---|---|\n")
-              for v in rows[:limit]:
-                  out.write(f"| {v['id']} | {v['severity']} | `{v['pkg']}` | `{v['installed']}` | `{v['fixed']}` |\n")
-              if len(rows) > limit:
-                  out.write(f"\n_Only first {limit} findings shown. Total findings: {len(rows)}._\n")
-
           with open("trivy-image-results.json", "r", encoding="utf-8") as f:
-              image_data = json.load(f)
+              data = json.load(f)
 
-          with open("sbom-vuln-results.json", "r", encoding="utf-8") as f:
-              sbom_data = json.load(f)
+          vulns = []
+          for result in data.get("Results", []):
+              target = result.get("Target", "")
+              for v in result.get("Vulnerabilities", []) or []:
+                  vulns.append({
+                      "target": target,
+                      "id": v.get("VulnerabilityID", "N/A"),
+                      "severity": v.get("Severity", "UNKNOWN"),
+                      "pkg": v.get("PkgName", "N/A"),
+                      "installed": v.get("InstalledVersion", "N/A"),
+                      "fixed": v.get("FixedVersion") or "N/A",
+                      "title": (v.get("Title") or v.get("Description") or "").replace("\n", " ").strip()
+                  })
 
-          image_vulns = collect_trivy_vulns(image_data)
-          sbom_vulns = collect_trivy_vulns(sbom_data)
+          counts = Counter(v["severity"] for v in vulns)
 
-          image_counts = Counter(v["severity"] for v in image_vulns)
-          sbom_counts = Counter(v["severity"] for v in sbom_vulns)
-
-          with open("security-summary.md", "w", encoding="utf-8") as out:
+          with open("image-summary.md", "w", encoding="utf-8") as out:
               out.write("## Trivy Image Scan Summary\n\n")
-              out.write(f"- **Image:** `{image_data.get('ArtifactName', 'N/A')}`\n")
-              out.write(f"- **Total findings:** **{len(image_vulns)}**\n")
-              out.write(f"- **Critical:** {image_counts.get('CRITICAL', 0)}\n")
-              out.write(f"- **High:** {image_counts.get('HIGH', 0)}\n\n")
+              out.write(f"- **Image:** `{data.get('ArtifactName', 'N/A')}`\n")
+              out.write(f"- **Total findings:** **{len(vulns)}**\n")
+              out.write(f"- **Critical:** {counts.get('CRITICAL', 0)}\n")
+              out.write(f"- **High:** {counts.get('HIGH', 0)}\n\n")
 
-              if image_vulns:
-                  write_table(out, image_vulns)
-                  out.write("\n<details><summary>Detailed Trivy image findings</summary>\n\n")
-                  for i, v in enumerate(image_vulns[:100], start=1):
-                      out.write(f"### {i}. {v['id']} ({v['severity']})\n")
-                      out.write(f"- Package: `{v['pkg']}`\n")
-                      out.write(f"- Installed: `{v['installed']}`\n")
-                      out.write(f"- Fixed: `{v['fixed']}`\n")
-                      out.write(f"- Target: `{v['target']}`\n")
-                      if v["title"]:
-                          out.write(f"- Detail: {v['title']}\n")
-                      out.write("\n")
-                  out.write("</details>\n\n")
+              if vulns:
+                  out.write("| CVE ID | Severity | Package | Installed | Fixed |\n")
+                  out.write("|---|---|---|---|---|\n")
+                  for v in vulns[:50]:
+                      out.write(f"| {v['id']} | {v['severity']} | `{v['pkg']}` | `{v['installed']}` | `{v['fixed']}` |\n")
               else:
-                  out.write("No HIGH/CRITICAL vulnerabilities found in the container image.\n\n")
-
-              out.write("## SBOM Summary\n\n")
-              out.write("- **Format:** `CycloneDX JSON`\n")
-              out.write("- **Artifact:** `sbom.cdx.json`\n")
-              out.write(f"- **SBOM vulnerability findings:** **{len(sbom_vulns)}**\n")
-              out.write(f"- **Critical:** {sbom_counts.get('CRITICAL', 0)}\n")
-              out.write(f"- **High:** {sbom_counts.get('HIGH', 0)}\n\n")
-
-              if sbom_vulns:
-                  write_table(out, sbom_vulns)
-                  out.write("\n<details><summary>Detailed SBOM vulnerability findings</summary>\n\n")
-                  for i, v in enumerate(sbom_vulns[:100], start=1):
-                      out.write(f"### {i}. {v['id']} ({v['severity']})\n")
-                      out.write(f"- Package: `{v['pkg']}`\n")
-                      out.write(f"- Installed: `{v['installed']}`\n")
-                      out.write(f"- Fixed: `{v['fixed']}`\n")
-                      out.write(f"- Target: `{v['target']}`\n")
-                      if v["title"]:
-                          out.write(f"- Detail: {v['title']}\n")
-                      out.write("\n")
-                  out.write("</details>\n")
-              else:
-                  out.write("No HIGH/CRITICAL vulnerabilities found from SBOM scanning.\n")
+                  out.write("No HIGH/CRITICAL vulnerabilities found in the container image.\n")
 
           PY
 
-          cat security-summary.md >> "$GITHUB_STEP_SUMMARY"
+          cat image-summary.md >> "$GITHUB_STEP_SUMMARY"
 
   cosign-sign:
-  runs-on: ubuntu-latest
-  needs: trivy-image-and-sbom
+    runs-on: ubuntu-latest
+    needs: trivy-image-scan
 
-  steps:
-    - name: Log in to GHCR
-      uses: docker/login-action@v3
-      with:
-        registry: ghcr.io
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Install Cosign
-      uses: sigstore/cosign-installer@v3
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
 
-    - name: Sign image
-      run: cosign sign --yes "${{ inputs.image-ref }}"
+      - name: Sign image
+        run: cosign sign --yes "${{ inputs.image-ref }}"
 
-    - name: Verify image signature and identity
-      id: cosign_verify
-      shell: bash
-      run: |
-        set +e
+      - name: Verify image signature and identity
+        id: cosign_verify
+        shell: bash
+        run: |
+          set +e
 
-        EXPECTED_IDENTITY="https://github.com/security-org-230982/security-engineering/.github/workflows/image-post-build.yaml@refs/heads/main"
-        ISSUER="https://token.actions.githubusercontent.com"
+          EXPECTED_IDENTITY="https://github.com/security-org-230982/security-engineering/.github/workflows/image-signing.yaml@refs/heads/main"
+          ISSUER="https://token.actions.githubusercontent.com"
 
-        VERIFY_OUTPUT=$(cosign verify \
-          --certificate-identity "$EXPECTED_IDENTITY" \
-          --certificate-oidc-issuer "$ISSUER" \
-          "${{ inputs.image-ref }}" 2>&1)
+          VERIFY_OUTPUT=$(cosign verify \
+            --certificate-identity "$EXPECTED_IDENTITY" \
+            --certificate-oidc-issuer "$ISSUER" \
+            "${{ inputs.image-ref }}" 2>&1)
 
-        STATUS=$?
+          STATUS=$?
 
-        echo "COSIGN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
-        echo "$VERIFY_OUTPUT" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
+          echo "COSIGN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
+          echo "$VERIFY_OUTPUT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
-        echo "EXPECTED_IDENTITY=$EXPECTED_IDENTITY" >> $GITHUB_OUTPUT
-        echo "ISSUER=$ISSUER" >> $GITHUB_OUTPUT
+          echo "EXPECTED_IDENTITY=$EXPECTED_IDENTITY" >> $GITHUB_OUTPUT
+          echo "ISSUER=$ISSUER" >> $GITHUB_OUTPUT
 
-        if [ $STATUS -eq 0 ]; then
-          echo "COSIGN_STATUS=PASS" >> $GITHUB_OUTPUT
-        else
-          echo "COSIGN_STATUS=FAIL" >> $GITHUB_OUTPUT
-        fi
+          if [ $STATUS -eq 0 ]; then
+            echo "COSIGN_STATUS=PASS" >> $GITHUB_OUTPUT
+          else
+            echo "COSIGN_STATUS=FAIL" >> $GITHUB_OUTPUT
+          fi
 
-        exit 0
+          exit 0
 
-    - name: Add Cosign summary
-      shell: bash
-      run: |
-        echo "## Cosign Image Signing & Verification" >> "$GITHUB_STEP_SUMMARY"
-        echo "" >> "$GITHUB_STEP_SUMMARY"
+      - name: Add Cosign summary
+        shell: bash
+        run: |
+          echo "## Cosign Image Signing & Verification" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image: \`${{ inputs.image-ref }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Verification Status: **${{ steps.cosign_verify.outputs.COSIGN_STATUS }}**" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Expected Identity" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ steps.cosign_verify.outputs.EXPECTED_IDENTITY }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### OIDC Issuer" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ steps.cosign_verify.outputs.ISSUER }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Verification Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.cosign_verify.outputs.COSIGN_OUTPUT }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-        echo "- Image: \`${{ inputs.image-ref }}\`" >> "$GITHUB_STEP_SUMMARY"
-        echo "- Verification Status: **${{ steps.cosign_verify.outputs.COSIGN_STATUS }}**" >> "$GITHUB_STEP_SUMMARY"
-        echo "" >> "$GITHUB_STEP_SUMMARY"
-
-        echo "### Expected Identity" >> "$GITHUB_STEP_SUMMARY"
-        echo "- \`${{ steps.cosign_verify.outputs.EXPECTED_IDENTITY }}\`" >> "$GITHUB_STEP_SUMMARY"
-        echo "" >> "$GITHUB_STEP_SUMMARY"
-
-        echo "### OIDC Issuer" >> "$GITHUB_STEP_SUMMARY"
-        echo "- \`${{ steps.cosign_verify.outputs.ISSUER }}\`" >> "$GITHUB_STEP_SUMMARY"
-        echo "" >> "$GITHUB_STEP_SUMMARY"
-
-        echo "### Verification Details" >> "$GITHUB_STEP_SUMMARY"
-        echo "" >> "$GITHUB_STEP_SUMMARY"
-        echo '```' >> "$GITHUB_STEP_SUMMARY"
-        echo "${{ steps.cosign_verify.outputs.COSIGN_OUTPUT }}" >> "$GITHUB_STEP_SUMMARY"
-        echo '```' >> "$GITHUB_STEP_SUMMARY"
-
-    - name: Fail if verification failed (enforcement)
-      if: steps.cosign_verify.outputs.COSIGN_STATUS == 'FAIL'
-      run: |
-        echo "Cosign verification failed: identity mismatch or signature invalid"
-        exit 1
+      - name: Fail if verification failed
+        if: steps.cosign_verify.outputs.COSIGN_STATUS == 'FAIL'
+        run: |
+          echo "Cosign verification failed: identity mismatch or signature invalid"
+          exit 1
