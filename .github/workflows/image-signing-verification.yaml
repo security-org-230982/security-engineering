@@ -1,4 +1,4 @@
-name: platform-deploy-gates
+name: image-signing-verification
 
 on:
   workflow_call:
@@ -6,14 +6,6 @@ on:
       image-ref:
         required: true
         type: string
-      chart-path:
-        required: false
-        type: string
-        default: helm/simple-game
-      values-file:
-        required: false
-        type: string
-        default: helm/simple-game/values.yaml
       certificate-identity:
         required: false
         type: string
