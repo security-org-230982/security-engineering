@@ -76,20 +76,16 @@ jobs:
       - name: Build CIS summary and findings
         shell: bash
         run: |
-          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-
           echo "## CIS Benchmark Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
           if [ ! -s kube-bench.json ]; then
             echo "- kube-bench.json is missing or empty." >> "$GITHUB_STEP_SUMMARY"
-            echo "- View artifacts in this workflow run: ${RUN_URL}" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
           if ! jq empty kube-bench.json >/dev/null 2>&1; then
             echo "- kube-bench.json is not valid JSON." >> "$GITHUB_STEP_SUMMARY"
-            echo "- View artifacts in this workflow run: ${RUN_URL}" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -100,26 +96,58 @@ jobs:
           INFO=$(jq '[.. | objects | select(.status=="INFO")] | length' kube-bench.json)
 
           echo "- Artifact: \`kube-bench.json\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- Total checks: ${TOTAL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- PASS: ${PASS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- FAIL: ${FAIL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- WARN: ${WARN}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- INFO: ${INFO}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Detailed findings are uploaded as workflow artifacts:" >> "$GITHUB_STEP_SUMMARY"
-          echo "  - \`kube-bench-detailed-report\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "  - \`kube-bench-raw\`" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "### Failed and Warning Findings" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| CIS Control ID | Issue Summary | Severity | Remediation |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+
+          jq -r '
+            [
+              .. | objects
+              | select(.status=="FAIL" or .status=="WARN")
+              | {
+                  control: (.test_number // .test_id // "N/A"),
+                  summary: (.test_desc // .test_name // "No description"),
+                  severity: .status,
+                  remediation: (.remediation // "N/A")
+                }
+            ] as $items
+            | if ($items | length) == 0 then
+                "| N/A | No failed or warning findings. | N/A | N/A |"
+              else
+                $items[]
+                | "| "
+                + (.control | tostring | gsub("\\|"; "\\\\|"))
+                + " | "
+                + (.summary | tostring | gsub("\\n"; " ") | gsub("\\|"; "\\\\|"))
+                + " | "
+                + (.severity | tostring | gsub("\\|"; "\\\\|"))
+                + " | "
+                + (.remediation | tostring | gsub("\\n"; " ") | gsub("\\|"; "\\\\|"))
+                + " |"
+            end
+          ' kube-bench.json >> "$GITHUB_STEP_SUMMARY"
 
           jq '
             [
               .. | objects
               | select(.status=="FAIL" or .status=="WARN")
               | {
-                  status: .status,
-                  test_number: (.test_number // .test_id // "N/A"),
-                  test_desc: (.test_desc // .test_name // "No description"),
-                  section: (.section // .group_title // .test_group // "N/A"),
-                  node: (.node_name // .node // .target // "N/A"),
+                  cis_control_id: (.test_number // .test_id // "N/A"),
+                  issue_summary: (.test_desc // .test_name // "No description"),
+                  severity: .status,
                   remediation: (.remediation // "N/A")
                 }
             ]
@@ -128,37 +156,33 @@ jobs:
           {
             echo "# CIS Benchmark Detailed Findings"
             echo ""
-            echo "- Total checks: ${TOTAL}"
-            echo "- PASS: ${PASS}"
-            echo "- FAIL: ${FAIL}"
-            echo "- WARN: ${WARN}"
-            echo "- INFO: ${INFO}"
-            echo ""
-            echo "## Failed and Warning Findings"
-            echo ""
+            echo "| CIS Control ID | Issue Summary | Severity | Remediation |"
+            echo "|---|---|---|---|"
 
             jq -r '
               [
                 .. | objects
                 | select(.status=="FAIL" or .status=="WARN")
                 | {
-                    status: .status,
-                    test_number: (.test_number // .test_id // "N/A"),
-                    test_desc: (.test_desc // .test_name // "No description"),
-                    section: (.section // .group_title // .test_group // "N/A"),
-                    node: (.node_name // .node // .target // "N/A"),
+                    control: (.test_number // .test_id // "N/A"),
+                    summary: (.test_desc // .test_name // "No description"),
+                    severity: .status,
                     remediation: (.remediation // "N/A")
                   }
-                ] as $items
-                | if ($items | length) == 0 then
-                    "No failed or warning findings."
-                  else
-                    $items[]
-                    | "### [" + .status + "] " + .test_number + "\n"
-                      + "- Description: " + .test_desc + "\n"
-                      + "- Section: " + .section + "\n"
-                      + "- Node: " + .node + "\n"
-                      + "- Remediation: " + .remediation + "\n"
-                  end
-              ' kube-bench.json
-            } > kube-bench-findings.md
+              ] as $items
+              | if ($items | length) == 0 then
+                  "| N/A | No failed or warning findings. | N/A | N/A |"
+                else
+                  $items[]
+                  | "| "
+                  + (.control | tostring | gsub("\\|"; "\\\\|"))
+                  + " | "
+                  + (.summary | tostring | gsub("\\n"; " ") | gsub("\\|"; "\\\\|"))
+                  + " | "
+                  + (.severity | tostring | gsub("\\|"; "\\\\|"))
+                  + " | "
+                  + (.remediation | tostring | gsub("\\n"; " ") | gsub("\\|"; "\\\\|"))
+                  + " |"
+              end
+            ' kube-bench.json
+          } > kube-bench-findings.md
