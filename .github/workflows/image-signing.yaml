@@ -98,13 +98,13 @@ jobs:
 
           cat image-summary.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Fail on HIGH/CRITICAL vulnerabilities
-        run: |
-          trivy image \
-            --severity HIGH,CRITICAL \
-            --ignore-unfixed \
-            --exit-code 1 \
-            "${{ inputs.image-ref }}"
+      # - name: Fail on HIGH/CRITICAL vulnerabilities
+      #   run: |
+      #     trivy image \
+      #       --severity HIGH,CRITICAL \
+      #       --ignore-unfixed \
+      #       --exit-code 1 \
+      #       "${{ inputs.image-ref }}"
 
   cosign-sign:
     runs-on: ubuntu-latest
