@@ -26,12 +26,12 @@ jobs:
       - name: Install Trivy
         uses: aquasecurity/setup-trivy@v0.2.2
 
-      - name: Run Trivy filesystem scan for dependencies
+      - name: Run Trivy filesystem scan for dependencies (SARIF)
         run: |
           trivy fs \
             --format sarif \
             --output trivy-sca-results.sarif \
-            --severity HIGH,CRITICAL \
+            --severity MEDIUM,HIGH,CRITICAL \
             --ignore-unfixed \
             .
 
@@ -45,7 +45,7 @@ jobs:
           trivy fs \
             --format json \
             --output trivy-sca-results.json \
-            --severity HIGH,CRITICAL \
+            --severity MEDIUM,HIGH,CRITICAL \
             --ignore-unfixed \
             .
 
@@ -79,7 +79,8 @@ jobs:
               out.write("## SCA Scan Summary\n\n")
               out.write(f"- **Total findings:** **{len(vulns)}**\n")
               out.write(f"- **Critical:** {counts.get('CRITICAL', 0)}\n")
-              out.write(f"- **High:** {counts.get('HIGH', 0)}\n\n")
+              out.write(f"- **High:** {counts.get('HIGH', 0)}\n")
+              out.write(f"- **Medium:** {counts.get('MEDIUM', 0)}\n\n")
 
               if vulns:
                   out.write("| CVE ID | Severity | Package | Installed | Fixed | Target |\n")
@@ -102,7 +103,7 @@ jobs:
                       out.write("\n")
                   out.write("</details>\n")
               else:
-                  out.write("No HIGH/CRITICAL dependency findings detected.\n")
+                  out.write("No MEDIUM/HIGH/CRITICAL dependency findings detected.\n")
 
           PY
 
