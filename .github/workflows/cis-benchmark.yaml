@@ -19,7 +19,7 @@ permissions:
   id-token: write
 
 jobs:
-  run-cis:
+  cis-scan:
     name: Run kube-bench
     runs-on: ubuntu-latest
 
@@ -64,7 +64,7 @@ jobs:
   cis-benchmark-summary:
     name: CIS benchmark summary & findings
     runs-on: ubuntu-latest
-    needs: run-cis
+    needs: cis-scan
 
     steps:
       - name: Download kube-bench artifact
