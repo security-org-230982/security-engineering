@@ -19,8 +19,9 @@ permissions:
 jobs:
   helm-chart-scan:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout platform repo
+      - name: Checkout caller repository
         uses: actions/checkout@v4
 
       - name: Set up Helm
@@ -49,6 +50,8 @@ jobs:
           sarif_file: trivy-k8s.sarif
 
       - name: Deep RBAC risk check
+        id: rbac_check
+        continue-on-error: true
         run: |
           python3 - <<'PY'
           import sys
@@ -89,8 +92,10 @@ jobs:
 
                       if "pods/exec" in resources and any(v in verbs for v in ["create", "*"]):
                           add_finding(kind, name, "can exec into pods")
+
                       if "pods/attach" in resources and any(v in verbs for v in ["create", "*"]):
                           add_finding(kind, name, "can attach to pods")
+
                       if "pods/portforward" in resources and any(v in verbs for v in ["create", "*"]):
                           add_finding(kind, name, "can port-forward to pods")
 
@@ -116,11 +121,13 @@ jobs:
 
                       if "nodes/proxy" in resources and any(v in verbs for v in ["get", "create", "*"]):
                           add_finding(kind, name, "can access node proxy")
+
                       if "nodes" in resources and any(v in verbs for v in ["proxy", "*"]):
                           add_finding(kind, name, "can proxy to nodes")
 
                       if "authentication.k8s.io" in api_groups and "tokenreviews" in resources and any(v in verbs for v in ["create", "*"]):
                           add_finding(kind, name, "can create token reviews")
+
                       if "authorization.k8s.io" in api_groups and any(r in resources for r in ["subjectaccessreviews", "selfsubjectaccessreviews", "localsubjectaccessreviews"]) and any(v in verbs for v in ["create", "*"]):
                           add_finding(kind, name, "can create subject access reviews")
 
@@ -160,12 +167,21 @@ jobs:
                       out.write(f"- {finding}\n")
 
           if risky_findings:
-              print("Deep RBAC risk findings detected:\\n")
+              print("Deep RBAC risk findings detected:\n")
               for finding in risky_findings:
                   print(f"- {finding}")
               sys.exit(1)
 
           print("No deep RBAC risks detected.")
+          PY
+
+      - name: Upload RBAC findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rbac-findings
+          path: rbac-findings.txt
+          if-no-files-found: ignore
 
       - name: Add Helm chart scan summary
         if: always()
@@ -188,3 +204,9 @@ jobs:
           else
             echo "- Deep RBAC risk check: **PASSED**" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Fail workflow if RBAC risk findings exist
+        if: steps.rbac_check.outcome == 'failure'
+        run: |
+          echo "Deep RBAC risk findings detected"
+          exit 1
