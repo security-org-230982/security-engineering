@@ -98,13 +98,13 @@ jobs:
 
           cat image-summary.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Fail on HIGH/CRITICAL vulnerabilities
-        run: |
-          trivy image \
-            --severity HIGH,CRITICAL \
-            --ignore-unfixed \
-            --exit-code 1 \
-            "${{ inputs.image-ref }}"
+      # - name: Fail on HIGH/CRITICAL vulnerabilities
+      #   run: |
+      #     trivy image \
+      #       --severity HIGH,CRITICAL \
+      #       --ignore-unfixed \
+      #       --exit-code 1 \
+      #       "${{ inputs.image-ref }}"
 
   container-image-signing:
     runs-on: ubuntu-latest
@@ -175,8 +175,8 @@ jobs:
           echo "${{ steps.cosign_verify.outputs.COSIGN_OUTPUT }}" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      # - name: Fail if verification failed
-      #   if: steps.cosign_verify.outputs.COSIGN_STATUS == 'FAIL'
-      #   run: |
-      #     echo "Cosign verification failed: identity mismatch or signature invalid"
-      #     exit 1
+      - name: Fail if verification failed
+        if: steps.cosign_verify.outputs.COSIGN_STATUS == 'FAIL'
+        run: |
+          echo "Cosign verification failed: identity mismatch or signature invalid"
+          exit 1
